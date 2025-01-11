@@ -17,9 +17,33 @@
 #ifndef WOW64PP_HPP
 #define WOW64PP_HPP
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 #include <cstring>  // memcpy
+#include <expected>
 #include <memory>
 #include <system_error>
+
+// The following macros are used to initialize static variables once in a
+// thread-safe manner while avoiding TLS, which is what MSVC uses for static
+// variables.
+#ifdef WOW64PP_AVOID_TLS
+//  Similar to:
+//  static T var_name = initializer;
+#define WOW64PP_STATIC_INIT_ONCE_TRIVIAL(T, var_name, initializer) \
+    static T var_name;                                             \
+    do {                                                           \
+        static_assert(std::is_trivially_destructible_v<T>);        \
+        static std::once_flag static_init_once_flag_;              \
+        std::call_once(static_init_once_flag_,                     \
+                       []() { var_name = initializer; });          \
+    } while (0)
+#else
+#define WOW64PP_STATIC_INIT_ONCE_TRIVIAL(T, var_name, initializer) \
+    static T var_name = initializer;
+#endif
 
 namespace wow64pp {
 
@@ -181,30 +205,6 @@ namespace detail {
 constexpr static auto image_directory_entry_export = 0;
 constexpr static auto ordinal_not_found = 0xC0000138;
 
-typedef int(__stdcall* FARPROC)();
-
-extern "C" {
-
-__declspec(dllimport) unsigned long __stdcall GetLastError();
-
-__declspec(dllimport) void* __stdcall GetCurrentProcess();
-
-__declspec(dllimport) int __stdcall DuplicateHandle(
-    void* hSourceProcessHandle,
-    void* hSourceHandle,
-    void* hTargetProcessHandle,
-    void** lpTargetHandle,
-    unsigned long dwDesiredAccess,
-    int bInheritHandle,
-    unsigned long dwOptions);
-
-__declspec(dllimport) void* __stdcall GetModuleHandleA(
-    const char* lpModuleName);
-
-__declspec(dllimport) FARPROC __stdcall GetProcAddress(void* hModule,
-                                                       const char* lpProcName);
-}
-
 inline std::error_code get_last_error() noexcept {
     return std::error_code(static_cast<int>(GetLastError()),
                            std::system_category());
@@ -220,8 +220,8 @@ inline void throw_if_failed(const char* message, int hr) {
                                 message);
 }
 
-inline void* self_handle() {
-    void* h;
+inline HANDLE self_handle() {
+    HANDLE h;
 
     if (DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
                         GetCurrentProcess(), &h, 0, 0,
@@ -231,18 +231,20 @@ inline void* self_handle() {
     return h;
 }
 
-inline void* self_handle(std::error_code& ec) noexcept {
-    void* h;
+inline HANDLE self_handle(std::error_code& ec) noexcept {
+    HANDLE h;
 
     if (DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
                         GetCurrentProcess(), &h, 0, 0,
                         0x00000002) == 0)  // DUPLICATE_SAME_ACCESS
         ec = get_last_error();
+    else
+        ec.clear();
 
     return h;
 }
 
-inline void* native_module_handle(const char* name) {
+inline HMODULE native_module_handle(const char* name) {
     const auto addr = GetModuleHandleA(name);
     if (addr == nullptr)
         throw_last_error("GetModuleHandleA() failed");
@@ -250,19 +252,22 @@ inline void* native_module_handle(const char* name) {
     return addr;
 }
 
-inline void* native_module_handle(const char* name,
-                                  std::error_code& ec) noexcept {
+inline HMODULE native_module_handle(const char* name,
+                                    std::error_code& ec) noexcept {
     const auto addr = GetModuleHandleA(name);
     if (addr == nullptr)
         ec = get_last_error();
+    else
+        ec.clear();
 
     return addr;
 }
 
 template <typename F>
 inline F native_ntdll_function(const char* name) {
-    const static auto ntdll_addr = native_module_handle("ntdll.dll");
-    auto f = reinterpret_cast<F>(detail::GetProcAddress(ntdll_addr, name));
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(HMODULE, ntdll_addr,
+                                     native_module_handle("ntdll.dll"));
+    auto f = reinterpret_cast<F>(GetProcAddress(ntdll_addr, name));
 
     if (f == nullptr)
         throw_last_error("failed to get address of ntdll function");
@@ -272,23 +277,38 @@ inline F native_ntdll_function(const char* name) {
 
 template <typename F>
 inline F native_ntdll_function(const char* name, std::error_code& ec) noexcept {
-    const auto ntdll_addr = native_module_handle("ntdll.dll", ec);
-    if (ec)
-        return nullptr;
+    using ntdll_result_t = std::expected<HMODULE, std::error_code>;
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
+        ntdll_result_t, ntdll_result, ([]() -> ntdll_result_t {
+            std::error_code ec;
+            const auto ntdll_addr = native_module_handle("ntdll.dll", ec);
+            if (ec)
+                return std::unexpected(ec);
+            return ntdll_addr;
+        }()));
 
-    const auto f =
-        reinterpret_cast<F>(detail::GetProcAddress(ntdll_addr, name));
+    if (!ntdll_result.has_value()) {
+        ec = ntdll_result.error();
+        return nullptr;
+    }
+
+    const auto ntdll_addr = *ntdll_result;
+
+    const auto f = reinterpret_cast<F>(GetProcAddress(ntdll_addr, name));
 
     if (f == nullptr)
         ec = detail::get_last_error();
+    else
+        ec.clear();
 
     return f;
 }
 
 inline std::uint64_t peb_address() {
-    const static auto NtWow64QueryInformationProcess64 =
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
+        defs::NtQueryInformationProcessT, NtWow64QueryInformationProcess64,
         native_ntdll_function<defs::NtQueryInformationProcessT>(
-            "NtWow64QueryInformationProcess64");
+            "NtWow64QueryInformationProcess64"));
 
     defs::PROCESS_BASIC_INFORMATION_64 pbi;
     const auto hres =
@@ -301,11 +321,25 @@ inline std::uint64_t peb_address() {
 }
 
 inline std::uint64_t peb_address(std::error_code& ec) noexcept {
-    const auto NtWow64QueryInformationProcess64 =
-        native_ntdll_function<defs::NtQueryInformationProcessT>(
-            "NtWow64QueryInformationProcess64", ec);
-    if (ec)
+    using function_result_t =
+        std::expected<defs::NtQueryInformationProcessT, std::error_code>;
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
+        function_result_t, function_result, ([]() -> function_result_t {
+            std::error_code ec;
+            const auto NtWow64QueryInformationProcess64 =
+                native_ntdll_function<defs::NtQueryInformationProcessT>(
+                    "NtWow64QueryInformationProcess64", ec);
+            if (ec)
+                return std::unexpected(ec);
+            return NtWow64QueryInformationProcess64;
+        }()));
+
+    if (!function_result.has_value()) {
+        ec = function_result.error();
         return 0;
+    }
+
+    const auto NtWow64QueryInformationProcess64 = *function_result;
 
     defs::PROCESS_BASIC_INFORMATION_64 pbi;
     const auto hres =
@@ -314,6 +348,8 @@ inline std::uint64_t peb_address(std::error_code& ec) noexcept {
                                          &pbi, sizeof(pbi), nullptr);
     if (hres < 0)
         ec = detail::get_last_error();
+    else
+        ec.clear();
 
     return pbi.PebBaseAddress;
 }
@@ -330,9 +366,10 @@ inline void read_memory(std::uint64_t address,
         return;
     }
 
-    const static auto NtWow64ReadVirtualMemory64 =
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
+        defs::NtWow64ReadVirtualMemory64T, NtWow64ReadVirtualMemory64,
         native_ntdll_function<defs::NtWow64ReadVirtualMemory64T>(
-            "NtWow64ReadVirtualMemory64");
+            "NtWow64ReadVirtualMemory64"));
 
     HANDLE h_self = self_handle();
     auto hres =
@@ -354,11 +391,25 @@ inline void read_memory(std::uint64_t address,
         return;
     }
 
-    const auto NtWow64ReadVirtualMemory64 =
-        native_ntdll_function<defs::NtWow64ReadVirtualMemory64T>(
-            "NtWow64ReadVirtualMemory64", ec);
-    if (ec)
+    using function_result_t =
+        std::expected<defs::NtWow64ReadVirtualMemory64T, std::error_code>;
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
+        function_result_t, function_result, ([]() -> function_result_t {
+            std::error_code ec;
+            const auto NtWow64ReadVirtualMemory64 =
+                native_ntdll_function<defs::NtWow64ReadVirtualMemory64T>(
+                    "NtWow64ReadVirtualMemory64", ec);
+            if (ec)
+                return std::unexpected(ec);
+            return NtWow64ReadVirtualMemory64;
+        }()));
+
+    if (!function_result.has_value()) {
+        ec = function_result.error();
         return;
+    }
+
+    const auto NtWow64ReadVirtualMemory64 = *function_result;
 
     HANDLE h_self = self_handle(ec);
     if (ec)
@@ -368,22 +419,22 @@ inline void read_memory(std::uint64_t address,
     CloseHandle(h_self);
     if (hres < 0)
         ec = get_last_error();
+    else
+        ec.clear();
 
     return;
 }
 
 template <typename T>
 inline T read_memory(std::uint64_t address) {
-    typename std::aligned_storage<sizeof(T), std::alignment_of<T>::value>::type
-        buffer;
+    alignas(T) std::byte buffer[sizeof(T)];
     read_memory(address, &buffer, sizeof(T));
     return *static_cast<T*>(static_cast<void*>(&buffer));
 }
 
 template <typename T>
 inline T read_memory(std::uint64_t address, std::error_code& ec) noexcept {
-    typename std::aligned_storage<sizeof(T), std::alignment_of<T>::value>::type
-        buffer;
+    alignas(T) std::byte buffer[sizeof(T)];
     read_memory(address, &buffer, sizeof(T), ec);
     return *static_cast<T*>(static_cast<void*>(&buffer));
 }
@@ -531,7 +582,7 @@ inline defs::IMAGE_EXPORT_DIRECTORY image_export_dir(
 }
 
 inline std::uint64_t ldr_procedure_address() {
-    const static auto ntdll_base = module_handle("ntdll.dll");
+    const auto ntdll_base = module_handle("ntdll.dll");
 
     const auto ied = image_export_dir(ntdll_base);
 
@@ -566,7 +617,7 @@ inline std::uint64_t ldr_procedure_address() {
 }
 
 inline std::uint64_t ldr_procedure_address(std::error_code& ec) {
-    const static auto ntdll_base = module_handle("ntdll.dll", ec);
+    const auto ntdll_base = module_handle("ntdll.dll", ec);
     if (ec)
         return 0;
 
@@ -627,7 +678,7 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
         (std::uint64_t)(args)...};
 
     // clang-format off
-    __pragma(code_seg(push, stack1, ".text"))
+    #pragma code_seg(push, stack1, ".text")
     __declspec(allocate(".text"), align(16))
     const static std::uint8_t shellcode[] = {
         0x55,             // push ebp
@@ -680,7 +731,7 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
         0x5D,       // pop ebp
         0xC3        // ret
     };
-    __pragma(code_seg(pop, stack1))
+    #pragma code_seg(pop, stack1)
     // clang-format on
 
     using my_fn_sig = void(__cdecl*)(
@@ -706,8 +757,8 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
  */
 inline std::uint64_t import(std::uint64_t hmodule,
                             const std::string& procedure_name) {
-    const static auto ldr_procedure_address_base =
-        detail::ldr_procedure_address();
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(std::uint64_t, ldr_procedure_address_base,
+                                     detail::ldr_procedure_address());
 
     defs::UNICODE_STRING_64 unicode_fun_name = {0};
     unicode_fun_name.Length =
@@ -740,13 +791,22 @@ inline std::uint64_t import(std::uint64_t hmodule,
 inline std::uint64_t import(std::uint64_t hmodule,
                             const std::string& procedure_name,
                             std::error_code& ec) {
-    static std::uint64_t ldr_procedure_address_base = 0;
-    if (!ldr_procedure_address_base) {
-        ldr_procedure_address_base = detail::ldr_procedure_address(ec);
+    using ldr_result_t = std::expected<std::uint64_t, std::error_code>;
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
+        ldr_result_t, ldr_result, ([]() -> ldr_result_t {
+            std::error_code ec;
+            const auto ldr_result = detail::ldr_procedure_address(ec);
+            if (ec)
+                return std::unexpected(ec);
+            return ldr_result;
+        }()));
 
-        if (ec)
-            return 0;
+    if (!ldr_result.has_value()) {
+        ec = ldr_result.error();
+        return 0;
     }
+
+    const auto ldr_procedure_address_base = *ldr_result;
 
     defs::UNICODE_STRING_64 unicode_fun_name = {0};
     unicode_fun_name.Length =
@@ -782,7 +842,7 @@ inline std::uint64_t ptr_to_uint64(T* ptr) {
  *   \return    The 64 bit integer argument.
  *   \exception Does not throw.
  */
-inline std::uint64_t handle_to_uint64(void* handle) {
+inline std::uint64_t handle_to_uint64(HANDLE handle) {
     static_assert(sizeof(handle) == sizeof(std::int32_t),
                   "expecting 32-bit handles");
 

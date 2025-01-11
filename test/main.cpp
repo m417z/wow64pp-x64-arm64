@@ -1,3 +1,4 @@
+#define WOW64PP_AVOID_TLS
 #include "../include/wow64pp.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -6,7 +7,7 @@
 #include <winternl.h>
 
 #define CATCH_CONFIG_MAIN
-#include "Catch/single_include/catch.hpp"
+#include "Catch/single_include/catch2/catch.hpp"
 
 TEST_CASE("basic") {
     auto ntdll = wow64pp::module_handle("ntdll.dll");
@@ -52,6 +53,43 @@ TEST_CASE("return_value_64bit") {
 }
 
 namespace {
+
+// Based on:
+// http://securityxploded.com/ntcreatethreadex.php
+// Another reference:
+// https://github.com/winsiderss/systeminformer/blob/25846070780183848dc8d8f335a54fa6e636e281/phlib/basesup.c#L217
+HANDLE MyCreateRemoteThread(HANDLE hProcess,
+                            LPTHREAD_START_ROUTINE lpStartAddress,
+                            LPVOID lpParameter,
+                            ULONG createFlags) {
+    using NtCreateThreadEx_t = NTSTATUS(WINAPI*)(
+        _Out_ PHANDLE ThreadHandle, _In_ ACCESS_MASK DesiredAccess,
+        _In_opt_ LPVOID ObjectAttributes,  // POBJECT_ATTRIBUTES
+        _In_ HANDLE ProcessHandle,
+        _In_ PVOID StartRoutine,  // PUSER_THREAD_START_ROUTINE
+        _In_opt_ PVOID Argument,
+        _In_ ULONG CreateFlags,  // THREAD_CREATE_FLAGS_*
+        _In_ SIZE_T ZeroBits, _In_ SIZE_T StackSize,
+        _In_ SIZE_T MaximumStackSize,
+        _In_opt_ LPVOID AttributeList  // PPS_ATTRIBUTE_LIST
+    );
+
+    static auto pNtCreateThreadEx = (NtCreateThreadEx_t)GetProcAddress(
+        GetModuleHandle("ntdll.dll"), "NtCreateThreadEx");
+    if (!pNtCreateThreadEx) {
+        return nullptr;
+    }
+
+    HANDLE hThread;
+    NTSTATUS result = pNtCreateThreadEx(&hThread, THREAD_ALL_ACCESS, nullptr,
+                                        hProcess, lpStartAddress, lpParameter,
+                                        createFlags, 0, 0, 0, nullptr);
+    if (result < 0) {
+        return nullptr;
+    }
+
+    return hThread;
+}
 
 void* FindNextFreeRegion(void* pAddress,
                          void* pMaxAddr,
@@ -106,6 +144,34 @@ void* AllocateLargeAddressAwareBuffer(std::size_t size) {
 }
 
 }  // namespace
+
+TEST_CASE("thread_without_tls") {
+    constexpr ULONG MY_REMOTE_THREAD_THREAD_ATTACH_EXEMPT = 0x02;
+
+    DWORD createThreadFlags =
+#ifdef WOW64PP_AVOID_TLS
+        MY_REMOTE_THREAD_THREAD_ATTACH_EXEMPT
+#else
+        0
+#endif
+        ;
+
+    HANDLE thread = MyCreateRemoteThread(
+        GetCurrentProcess(),
+        [](LPVOID pThis) -> DWORD {
+            auto ntdll = wow64pp::module_handle("ntdll.dll");
+            std::error_code ec;
+            auto fn = wow64pp::import(ntdll, "NtGetTickCount", ec);
+            REQUIRE(!ec);
+            wow64pp::call_function(fn);
+            return 0;
+        },
+        0, createThreadFlags);
+    REQUIRE(thread);
+
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+}
 
 TEST_CASE("large_address_aware_ptr") {
     auto ntdll = wow64pp::module_handle("ntdll.dll");
