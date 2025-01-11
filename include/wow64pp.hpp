@@ -426,7 +426,7 @@ namespace wow64pp {
     } // namespace detail
 
 
-    /** \brief An equalient of winapi GetModuleHandle function.
+    /** \brief An equivalent of winapi GetModuleHandle function.
      *   \param[in] module_name The name of the module to get the handle of.
      *   \return    The handle to the module as a 64 bit integer.
      *   \exception Throws std::system_error on failure.
@@ -473,7 +473,7 @@ namespace wow64pp {
             "Could not get x64 module handle");
     }
 
-    /** \brief An equalient of winapi GetModuleHandle function.
+    /** \brief An equivalent of winapi GetModuleHandle function.
      *   \param[in] module_name The name of the module to get the handle of.
      *   \param[out] ec An error code that will be set in case of failure
      *   \return    The handle to the module as a 64 bit integer.
@@ -782,11 +782,11 @@ namespace wow64pp {
     }
 
 
-    /** \brief An equalient of winapi GetProcAddress function.
-     *   \param[in] hmodule The handle to the module in which to search for the
-     * procedure. \param[in] procedure_name The name of the procedure to be searched
-     * for. \return    The address of the exported function or variable. \exception
-     * Throws std::system_error on failure.
+    /** \brief An equivalent of winapi GetProcAddress function.
+     *   \param[in] hmodule The handle to the module in which to search for the procedure.
+     *   \param[in] procedure_name The name of the procedure to be searched for.
+     *   \return    The address of the exported function or variable.
+     *   \exception Throws std::system_error on failure.
      */
     inline std::uint64_t import(std::uint64_t      hmodule,
                                 const std::string& procedure_name)
@@ -816,10 +816,11 @@ namespace wow64pp {
     }
 
     /** \brief An equivalent of winapi GetProcAddress function.
-     *   \param[in] hmodule The handle to the module in which to search for the
-     * procedure. \param[in] procedure_name The name of the procedure to be searched
-     * for. \param[out] ec An error code that will be set in case of failure \return
-     * The address of the exported function or variable. \exception Does not throw.
+     *   \param[in]  hmodule The handle to the module in which to search for the procedure.
+     *   \param[in]  procedure_name The name of the procedure to be searched for.
+     *   \param[out] ec An error code that will be set in case of failure
+     *   \return     The address of the exported function or variable.
+     *   \exception  Does not throw.
      */
     inline std::uint64_t import(std::uint64_t      hmodule,
                                 const std::string& procedure_name,
