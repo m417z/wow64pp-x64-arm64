@@ -647,13 +647,13 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
 
 
         0xA8, 0x01,             // test al, 1
-        0x75, 0x04,             // jne 8, _no_adjust
+        0x75, 0x04,             // jne _no_adjust
         0x48, 0x83, 0xEC, 0x08, // sub rsp, 8
      // _no adjust:
-         0x57, // push rdi
+         0x57,                                     // push rdi
          0x67, 0x48, 0x8B, 0x7D, 0x38,             // mov rdi, [ebp + 56]
          0x48, 0x85, 0xC0,                         // je _ls_e
-         0x74, 0x16, 0x48, 0x8D, 0x7C, 0xC7, 0xF8, // lea rdi,[rdi+rax*8-8]
+         0x74, 0x16, 0x48, 0x8D, 0x7C, 0xC7, 0xF8, // lea rdi, [rdi+rax*8-8]
      // _ls:
          0x48, 0x85, 0xC0,       // test rax, rax
          0x74, 0x0C,             // je _ls_e
@@ -665,13 +665,13 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
         0x67, 0x8B, 0x7D, 0x40,       // mov edi, [ebp + 64]
         0x48, 0x83, 0xEC, 0x20,       // sub rsp, 0x20
         0x67, 0xFF, 0x55, 0x08,       // call [ebp + 0x8]
-        0x67, 0x89, 0x07,             // mov [edi], eax
+        0x67, 0x48, 0x89, 0x07,       // mov [edi], rax
         0x67, 0x48, 0x8B, 0x4D, 0x30, // mov rcx, [ebp+48]
-        0x48, 0x8D, 0x64, 0xCC, 0x20, // lea rsp,[rsp+rcx*8+0x20]
+        0x48, 0x8D, 0x64, 0xCC, 0x20, // lea rsp, [rsp+rcx*8+0x20]
         0x5F,                         // pop rdi
 
      // exit 64 bit mode
-        0xE8, 0, 0, 0, 0, 0xC7,0x44, 0x24, 4, 0x23, 0, 0, 0, 0x83, 4, 0x24, 0xD, 0xCB,
+        0xE8, 0, 0, 0, 0, 0xC7, 0x44, 0x24, 4, 0x23, 0, 0, 0, 0x83, 4, 0x24, 0xD, 0xCB,
 
         0x66, 0x8C, 0xD8, // mov ax, ds
         0x8E, 0xD0,       // mov ss, eax
@@ -687,7 +687,7 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
         std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
         std::uint64_t, std::uint64_t, std::uint64_t, std::uint32_t);
 
-    std::uint32_t ret;
+    std::uint64_t ret;
     reinterpret_cast<my_fn_sig>(&shellcode)(
         func, arr_args[0], arr_args[1], arr_args[2], arr_args[3],
         sizeof...(Args) > 4 ? (sizeof...(Args) - 4) : 0,

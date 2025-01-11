@@ -8,7 +8,7 @@
 #define CATCH_CONFIG_MAIN
 #include "Catch/single_include/catch.hpp"
 
-TEST_CASE("basic_test") {
+TEST_CASE("basic") {
     auto ntdll = wow64pp::module_handle("ntdll.dll");
     std::error_code ec;
     auto fn = wow64pp::import(ntdll, "NtReadVirtualMemory", ec);
@@ -34,6 +34,21 @@ TEST_CASE("basic_test") {
             REQUIRE(read == 4);
         }
     }
+}
+
+TEST_CASE("return_value_64bit") {
+    auto ntdll = wow64pp::module_handle("ntdll.dll");
+    std::error_code ec;
+    auto encode_fn = wow64pp::import(ntdll, "RtlEncodePointer", ec);
+    REQUIRE(!ec);
+    auto decode_fn = wow64pp::import(ntdll, "RtlDecodePointer", ec);
+    REQUIRE(!ec);
+
+    std::uint64_t ptr = 0x1234567812345678;
+
+    auto encoded = wow64pp::call_function(encode_fn, ptr);
+    auto decoded = wow64pp::call_function(decode_fn, encoded);
+    REQUIRE(decoded == ptr);
 }
 
 namespace {
@@ -92,7 +107,7 @@ void* AllocateLargeAddressAwareBuffer(std::size_t size) {
 
 }  // namespace
 
-TEST_CASE("large_address_aware_ptr_test") {
+TEST_CASE("large_address_aware_ptr") {
     auto ntdll = wow64pp::module_handle("ntdll.dll");
     std::error_code ec;
     auto fn = wow64pp::import(ntdll, "NtReadVirtualMemory", ec);
