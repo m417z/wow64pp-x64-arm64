@@ -847,6 +847,39 @@ namespace wow64pp {
         return ret;
     }
 
+    /** \brief Use to pass pointers as arguments to call_function.
+     *   \param[in] ptr The pointer.
+     *   \return    The 64 bit integer argument.
+     *   \exception Does not throw.
+     */
+    template <typename T>
+    inline std::uint64_t ptr_to_uint64(T* ptr)
+    {
+        static_assert(sizeof(ptr) == sizeof(std::uint32_t), "expecting 32-bit pointers");
+
+        // Without the double casting, the pointer is sign extended, not zero extended,
+        // which leads to invalid addresses with /LARGEADDRESSAWARE.
+        return static_cast<std::uint64_t>(reinterpret_cast<std::uint32_t>(ptr));
+    }
+
+    /** \brief Use to pass handles as arguments to call_function.
+     *   \param[in] ptr The handle.
+     *   \return    The 64 bit integer argument.
+     *   \exception Does not throw.
+     */
+    inline std::uint64_t handle_to_uint64(void* handle)
+    {
+        static_assert(sizeof(handle) == sizeof(std::int32_t), "expecting 32-bit handles");
+
+        // Sign-extension is required for pseudo handles such as the handle returned
+        // from GetCurrentProcess().
+        // "64-bit versions of Windows use 32-bit handles for interoperability [...] it
+        // is safe to [...] sign-extend the handle (when passing it from 32-bit to
+        // 64-bit)."
+        // https://docs.microsoft.com/en-us/windows/win32/winprog64/interprocess-communication
+        return static_cast<std::uint64_t>(reinterpret_cast<std::int32_t>(handle));
+    }
+
 } // namespace wow64pp
 
 #endif // #ifndef WOW64PP_HPP
