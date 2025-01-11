@@ -627,7 +627,9 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
         (std::uint64_t)(args)...};
 
     // clang-format off
-    constexpr static std::uint8_t shellcode[] = {
+    __pragma(code_seg(push, stack1, ".text"))
+    __declspec(allocate(".text"), align(16))
+    const static std::uint8_t shellcode[] = {
         0x55,             // push ebp
         0x89, 0xE5,       // mov ebp, esp
 
@@ -678,31 +680,15 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
         0x5D,       // pop ebp
         0xC3        // ret
     };
+    __pragma(code_seg(pop, stack1))
     // clang-format on
-
-    // this kind of initialization in general case produced better assembly
-    // compared to IIFE
-    static void* allocated_shellcode = nullptr;
-
-    // MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE
-    if (!allocated_shellcode) {
-        allocated_shellcode = VirtualAlloc(nullptr, sizeof(shellcode),
-                                           0x00001000 | 0x00002000, 0x40);
-
-        if (!allocated_shellcode)
-            detail::throw_last_error(
-                "VirtualAlloc failed to allocate memory for call_function "
-                "shellcode");
-
-        std::memcpy(allocated_shellcode, shellcode, sizeof(shellcode));
-    }
 
     using my_fn_sig = void(__cdecl*)(
         std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
         std::uint64_t, std::uint64_t, std::uint64_t, std::uint32_t);
 
     std::uint32_t ret;
-    reinterpret_cast<my_fn_sig>(allocated_shellcode)(
+    reinterpret_cast<my_fn_sig>(&shellcode)(
         func, arr_args[0], arr_args[1], arr_args[2], arr_args[3],
         sizeof...(Args) > 4 ? (sizeof...(Args) - 4) : 0,
         reinterpret_cast<std::uint64_t>(arr_args + 4),
