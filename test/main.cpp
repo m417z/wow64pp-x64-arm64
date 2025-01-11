@@ -1,7 +1,6 @@
 #define CATCH_CONFIG_MAIN
 #include "Catch/single_include/catch.hpp"
-#include <wow64pp.hpp>
-#include <winternl.h>
+#include "../include/wow64pp.hpp"
 
 
 TEST_CASE ("test")
