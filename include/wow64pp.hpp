@@ -322,7 +322,7 @@ template <typename P>
 inline void read_memory(std::uint64_t address,
                         P* buffer,
                         std::size_t size = sizeof(P)) {
-    if (address < std::numeric_limits<std::uint32_t>::max()) {
+    if (address + size - 1 <= std::numeric_limits<std::uint32_t>::max()) {
         std::memcpy(
             buffer,
             reinterpret_cast<const void*>(static_cast<std::uint32_t>(address)),
@@ -346,7 +346,7 @@ inline void read_memory(std::uint64_t address,
                         P* buffer,
                         std::size_t size,
                         std::error_code& ec) noexcept {
-    if (address < std::numeric_limits<std::uint32_t>::max()) {
+    if (address + size - 1 <= std::numeric_limits<std::uint32_t>::max()) {
         std::memcpy(
             buffer,
             reinterpret_cast<const void*>(static_cast<std::uint32_t>(address)),
