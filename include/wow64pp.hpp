@@ -50,7 +50,7 @@ namespace wow64pp {
 
 namespace defs {
 
-using NtQueryInformationProcessT =
+using NtWow64QueryInformationProcess64T =
     long(__stdcall*)(void* ProcessHandle,
                      unsigned long ProcessInformationClass,
                      void* ProcessInformation,
@@ -76,14 +76,14 @@ struct UNICODE_STRING_64 {
 };
 
 struct PROCESS_BASIC_INFORMATION_64 {
-    std::uint64_t _unused_1;
+    std::uint64_t unused_1_;
     std::uint64_t PebBaseAddress;
-    std::uint64_t _unused_2[4];
+    std::uint64_t unused_2_[4];
 };
 
 struct PEB_64 {
-    unsigned char _unused_1[4];
-    std::uint64_t _unused_2[2];
+    unsigned char unused_1_[4];
+    std::uint64_t unused_2_[2];
     std::uint64_t Ldr;
 };
 
@@ -102,7 +102,7 @@ struct LDR_DATA_TABLE_ENTRY_64 {
     std::uint64_t EntryPoint;
     union {
         unsigned long SizeOfImage;
-        std::uint64_t _dummy;
+        std::uint64_t dummy_;
     };
     UNICODE_STRING_64 FullDllName;
     UNICODE_STRING_64 BaseDllName;
@@ -112,20 +112,26 @@ struct LDR_DATA_TABLE_ENTRY_64 {
 
 namespace detail {
 
-constexpr static auto image_directory_entry_export = 0;
-constexpr static auto ordinal_not_found = 0xC0000138;
-
 inline std::error_code get_last_error() noexcept {
     return std::error_code(static_cast<int>(GetLastError()),
                            std::system_category());
 }
 
-inline void throw_last_error(const char* message) {
+[[noreturn]] inline void throw_error_code(const std::error_code& ec) {
+    throw std::system_error(ec);
+}
+
+[[noreturn]] inline void throw_error_code(const std::error_code& ec,
+                                          const char* message) {
+    throw std::system_error(ec, message);
+}
+
+[[noreturn]] inline void throw_last_error(const char* message) {
     throw std::system_error(get_last_error(), message);
 }
 
-inline void throw_if_failed(const char* message, int hr) {
-    if (hr < 0)
+inline void throw_if_failed(const char* message, HRESULT hr) {
+    if (FAILED(hr))
         throw std::system_error(std::error_code(hr, std::system_category()),
                                 message);
 }
@@ -135,7 +141,7 @@ inline HANDLE self_handle() {
 
     if (DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
                         GetCurrentProcess(), &h, 0, 0,
-                        0x00000002) == 0)  // DUPLICATE_SAME_ACCESS
+                        DUPLICATE_SAME_ACCESS) == 0)
         throw_last_error("failed to duplicate current process handle");
 
     return h;
@@ -146,7 +152,7 @@ inline HANDLE self_handle(std::error_code& ec) noexcept {
 
     if (DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
                         GetCurrentProcess(), &h, 0, 0,
-                        0x00000002) == 0)  // DUPLICATE_SAME_ACCESS
+                        DUPLICATE_SAME_ACCESS) == 0)
         ec = get_last_error();
     else
         ec.clear();
@@ -154,31 +160,13 @@ inline HANDLE self_handle(std::error_code& ec) noexcept {
     return h;
 }
 
-inline HMODULE native_module_handle(const char* name) {
-    const auto addr = GetModuleHandleA(name);
-    if (addr == nullptr)
-        throw_last_error("GetModuleHandleA() failed");
-
-    return addr;
-}
-
-inline HMODULE native_module_handle(const char* name,
-                                    std::error_code& ec) noexcept {
-    const auto addr = GetModuleHandleA(name);
-    if (addr == nullptr)
-        ec = get_last_error();
-    else
-        ec.clear();
-
-    return addr;
-}
-
 template <typename F>
 inline F native_ntdll_function(const char* name) {
-    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(HMODULE, ntdll_addr,
-                                     native_module_handle("ntdll.dll"));
-    auto f = reinterpret_cast<F>(GetProcAddress(ntdll_addr, name));
+    const auto ntdll_addr = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll_addr == nullptr)
+        throw_last_error("GetModuleHandle() failed");
 
+    auto f = reinterpret_cast<F>(GetProcAddress(ntdll_addr, name));
     if (f == nullptr)
         throw_last_error("failed to get address of ntdll function");
 
@@ -187,38 +175,65 @@ inline F native_ntdll_function(const char* name) {
 
 template <typename F>
 inline F native_ntdll_function(const char* name, std::error_code& ec) noexcept {
-    using ntdll_result_t = std::expected<HMODULE, std::error_code>;
-    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
-        ntdll_result_t, ntdll_result, ([]() -> ntdll_result_t {
-            std::error_code ec;
-            const auto ntdll_addr = native_module_handle("ntdll.dll", ec);
-            if (ec)
-                return std::unexpected(ec);
-            return ntdll_addr;
-        }()));
-
-    if (!ntdll_result.has_value()) {
-        ec = ntdll_result.error();
+    const auto ntdll_addr = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll_addr == nullptr) {
+        ec = get_last_error();
         return nullptr;
     }
 
-    const auto ntdll_addr = *ntdll_result;
-
     const auto f = reinterpret_cast<F>(GetProcAddress(ntdll_addr, name));
+    if (f == nullptr) {
+        ec = get_last_error();
+        return nullptr;
+    }
 
-    if (f == nullptr)
-        ec = detail::get_last_error();
-    else
-        ec.clear();
-
+    ec.clear();
     return f;
 }
 
-inline std::uint64_t peb_address() {
+template <typename FunctionType, const char* FunctionName>
+inline FunctionType get_cached_native_ntdll_function(
+    std::error_code& ec) noexcept {
+    using function_result_t = std::expected<FunctionType, std::error_code>;
     WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
-        defs::NtQueryInformationProcessT, NtWow64QueryInformationProcess64,
-        native_ntdll_function<defs::NtQueryInformationProcessT>(
-            "NtWow64QueryInformationProcess64"));
+        function_result_t, function_result, ([]() -> function_result_t {
+            std::error_code ec;
+            const auto function =
+                native_ntdll_function<FunctionType>(FunctionName, ec);
+            if (ec)
+                return std::unexpected(ec);
+            return function;
+        }()));
+    if (!function_result.has_value()) {
+        ec = function_result.error();
+        return nullptr;
+    }
+
+    ec.clear();
+    return *function_result;
+}
+
+inline defs::NtWow64QueryInformationProcess64T
+get_cached_nt_wow64_query_information_process_64(std::error_code& ec) noexcept {
+    static constexpr char function_name[] = "NtWow64QueryInformationProcess64";
+    return get_cached_native_ntdll_function<
+        defs::NtWow64QueryInformationProcess64T, function_name>(ec);
+}
+
+inline defs::NtWow64ReadVirtualMemory64T
+get_cached_nt_wow64_read_virtual_memory_64(std::error_code& ec) noexcept {
+    static constexpr char function_name[] = "NtWow64ReadVirtualMemory64";
+    return get_cached_native_ntdll_function<defs::NtWow64ReadVirtualMemory64T,
+                                            function_name>(ec);
+}
+
+inline std::uint64_t peb_address() {
+    std::error_code ec;
+    const auto NtWow64QueryInformationProcess64 =
+        get_cached_nt_wow64_query_information_process_64(ec);
+    if (ec) {
+        throw_error_code(ec);
+    }
 
     defs::PROCESS_BASIC_INFORMATION_64 pbi;
     const auto hres =
@@ -231,25 +246,11 @@ inline std::uint64_t peb_address() {
 }
 
 inline std::uint64_t peb_address(std::error_code& ec) noexcept {
-    using function_result_t =
-        std::expected<defs::NtQueryInformationProcessT, std::error_code>;
-    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
-        function_result_t, function_result, ([]() -> function_result_t {
-            std::error_code ec;
-            const auto NtWow64QueryInformationProcess64 =
-                native_ntdll_function<defs::NtQueryInformationProcessT>(
-                    "NtWow64QueryInformationProcess64", ec);
-            if (ec)
-                return std::unexpected(ec);
-            return NtWow64QueryInformationProcess64;
-        }()));
-
-    if (!function_result.has_value()) {
-        ec = function_result.error();
+    const auto NtWow64QueryInformationProcess64 =
+        get_cached_nt_wow64_query_information_process_64(ec);
+    if (ec) {
         return 0;
     }
-
-    const auto NtWow64QueryInformationProcess64 = *function_result;
 
     defs::PROCESS_BASIC_INFORMATION_64 pbi;
     const auto hres =
@@ -258,8 +259,6 @@ inline std::uint64_t peb_address(std::error_code& ec) noexcept {
                                          &pbi, sizeof(pbi), nullptr);
     if (hres < 0)
         ec = detail::get_last_error();
-    else
-        ec.clear();
 
     return pbi.PebBaseAddress;
 }
@@ -276,10 +275,12 @@ inline void read_memory(std::uint64_t address,
         return;
     }
 
-    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
-        defs::NtWow64ReadVirtualMemory64T, NtWow64ReadVirtualMemory64,
-        native_ntdll_function<defs::NtWow64ReadVirtualMemory64T>(
-            "NtWow64ReadVirtualMemory64"));
+    std::error_code ec;
+    const auto NtWow64ReadVirtualMemory64 =
+        get_cached_nt_wow64_read_virtual_memory_64(ec);
+    if (ec) {
+        throw_error_code(ec);
+    }
 
     HANDLE h_self = self_handle();
     auto hres =
@@ -301,25 +302,11 @@ inline void read_memory(std::uint64_t address,
         return;
     }
 
-    using function_result_t =
-        std::expected<defs::NtWow64ReadVirtualMemory64T, std::error_code>;
-    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
-        function_result_t, function_result, ([]() -> function_result_t {
-            std::error_code ec;
-            const auto NtWow64ReadVirtualMemory64 =
-                native_ntdll_function<defs::NtWow64ReadVirtualMemory64T>(
-                    "NtWow64ReadVirtualMemory64", ec);
-            if (ec)
-                return std::unexpected(ec);
-            return NtWow64ReadVirtualMemory64;
-        }()));
-
-    if (!function_result.has_value()) {
-        ec = function_result.error();
+    const auto NtWow64ReadVirtualMemory64 =
+        get_cached_nt_wow64_read_virtual_memory_64(ec);
+    if (ec) {
         return;
     }
-
-    const auto NtWow64ReadVirtualMemory64 = *function_result;
 
     HANDLE h_self = self_handle(ec);
     if (ec)
@@ -329,10 +316,6 @@ inline void read_memory(std::uint64_t address,
     CloseHandle(h_self);
     if (hres < 0)
         ec = get_last_error();
-    else
-        ec.clear();
-
-    return;
 }
 
 template <typename T>
@@ -391,7 +374,7 @@ inline std::uint64_t module_handle(std::string_view module_name) {
     } while (head.InLoadOrderLinks.Flink != last_entry);
 
     throw std::system_error(
-        std::error_code(detail::ordinal_not_found, std::system_category()),
+        std::error_code(STATUS_ORDINAL_NOT_FOUND, std::system_category()),
         "Could not get x64 module handle");
 }
 
@@ -443,7 +426,7 @@ inline std::uint64_t module_handle(std::string_view module_name,
     } while (head.InLoadOrderLinks.Flink != last_entry);
 
     if (!ec)
-        ec = std::error_code(detail::ordinal_not_found, std::system_category());
+        ec = std::error_code(STATUS_ORDINAL_NOT_FOUND, std::system_category());
 
     return 0;
 }
@@ -455,7 +438,7 @@ inline IMAGE_EXPORT_DIRECTORY image_export_dir(std::uint64_t ntdll_base) {
 
     const auto idd_virtual_addr =
         read_memory<IMAGE_NT_HEADERS64>(ntdll_base + e_lfanew)
-            .OptionalHeader.DataDirectory[image_directory_entry_export]
+            .OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT]
             .VirtualAddress;
 
     if (idd_virtual_addr == 0)
@@ -474,13 +457,13 @@ inline IMAGE_EXPORT_DIRECTORY image_export_dir(std::uint64_t ntdll_base,
 
     const auto idd_virtual_addr =
         read_memory<IMAGE_NT_HEADERS64>(ntdll_base + e_lfanew, ec)
-            .OptionalHeader.DataDirectory[image_directory_entry_export]
+            .OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT]
             .VirtualAddress;
     if (ec)
         return {};
 
     if (idd_virtual_addr == 0) {
-        ec = std::error_code(ordinal_not_found, std::system_category());
+        ec = std::error_code(STATUS_ORDINAL_NOT_FOUND, std::system_category());
         return {};
     }
 
@@ -519,7 +502,7 @@ inline std::uint64_t ldr_procedure_address() {
     }
 
     throw std::system_error(
-        std::error_code(ordinal_not_found, std::system_category()),
+        std::error_code(STATUS_ORDINAL_NOT_FOUND, std::system_category()),
         "could find x64 LdrGetProcedureAddress()");
 }
 
@@ -566,9 +549,67 @@ inline std::uint64_t ldr_procedure_address(std::error_code& ec) {
             return ntdll_base + rva_table[ord_table[i]];
     }
 
-    ec = std::error_code(ordinal_not_found, std::system_category());
+    ec = std::error_code(STATUS_ORDINAL_NOT_FOUND, std::system_category());
     return 0;
 }
+
+#pragma code_seg(push, r1, ".text")
+__declspec(allocate(".text"))  //
+static const std::uint8_t call_function_shellcode[] = {
+    // clang-format off
+
+    0x55,             // push ebp
+    0x89, 0xE5,       // mov ebp, esp
+
+    0x83, 0xE4, 0xF0, // and esp, 0xFFFFFFF0
+
+    // enter 64 bit mode
+    0x6A, 0x33, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x83, 0x04, 0x24, 0x05, 0xCB,
+
+    0x67, 0x48, 0x8B, 0x4D, 16, // mov rcx, [ebp + 16]
+    0x67, 0x48, 0x8B, 0x55, 24, // mov rdx, [ebp + 24]
+    0x67, 0x4C, 0x8B, 0x45, 32, // mov r8,  [ebp + 32]
+    0x67, 0x4C, 0x8B, 0x4D, 40, // mov r9,  [ebp + 40]
+
+    0x67, 0x48, 0x8B, 0x45, 48, // mov rax, [ebp + 48] args count
+
+    0xA8, 0x01,             // test al, 1
+    0x75, 0x04,             // jne _no_adjust
+    0x48, 0x83, 0xEC, 0x08, // sub rsp, 8
+    // _no adjust:
+        0x57,                                     // push rdi
+        0x67, 0x48, 0x8B, 0x7D, 0x38,             // mov rdi, [ebp + 56]
+        0x48, 0x85, 0xC0,                         // je _ls_e
+        0x74, 0x16, 0x48, 0x8D, 0x7C, 0xC7, 0xF8, // lea rdi, [rdi+rax*8-8]
+    // _ls:
+        0x48, 0x85, 0xC0,       // test rax, rax
+        0x74, 0x0C,             // je _ls_e
+        0xFF, 0x37,             // push [rdi]
+        0x48, 0x83, 0xEF, 0x08, // sub rdi, 8
+        0x48, 0x83, 0xE8, 0x01, // sub rax, 1
+        0xEB, 0xEF,             // jmp _ls
+    // _ls_e:
+    0x67, 0x8B, 0x7D, 0x40,       // mov edi, [ebp + 64]
+    0x48, 0x83, 0xEC, 0x20,       // sub rsp, 0x20
+    0x67, 0xFF, 0x55, 0x08,       // call [ebp + 0x8]
+    0x67, 0x48, 0x89, 0x07,       // mov [edi], rax
+    0x67, 0x48, 0x8B, 0x4D, 0x30, // mov rcx, [ebp+48]
+    0x48, 0x8D, 0x64, 0xCC, 0x20, // lea rsp, [rsp+rcx*8+0x20]
+    0x5F,                         // pop rdi
+
+    // exit 64 bit mode
+    0xE8, 0, 0, 0, 0, 0xC7, 0x44, 0x24, 4, 0x23, 0, 0, 0, 0x83, 4, 0x24, 0xD, 0xCB,
+
+    0x66, 0x8C, 0xD8, // mov ax, ds
+    0x8E, 0xD0,       // mov ss, eax
+
+    0x89, 0xEC, // mov esp, ebp
+    0x5D,       // pop ebp
+    0xC3        // ret
+
+    // clang-format on
+};
+#pragma code_seg(pop, r1)
 
 }  // namespace detail
 
@@ -583,68 +624,12 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
     std::uint64_t arr_args[sizeof...(args) > 4 ? sizeof...(args) : 4] = {
         (std::uint64_t)(args)...};
 
-    // clang-format off
-    #pragma code_seg(push, stack1, ".text")
-    __declspec(allocate(".text"), align(16))
-    const static std::uint8_t shellcode[] = {
-        0x55,             // push ebp
-        0x89, 0xE5,       // mov ebp, esp
-
-        0x83, 0xE4, 0xF0, // and esp, 0xFFFFFFF0
-
-        // enter 64 bit mode
-        0x6A, 0x33, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x83, 0x04, 0x24, 0x05, 0xCB,
-
-        0x67, 0x48, 0x8B, 0x4D, 16, // mov rcx, [ebp + 16]
-        0x67, 0x48, 0x8B, 0x55, 24, // mov rdx, [ebp + 24]
-        0x67, 0x4C, 0x8B, 0x45, 32, // mov r8,  [ebp + 32]
-        0x67, 0x4C, 0x8B, 0x4D, 40, // mov r9,  [ebp + 40]
-
-        0x67, 0x48, 0x8B, 0x45, 48, // mov rax, [ebp + 48] args count
-
-        0xA8, 0x01,             // test al, 1
-        0x75, 0x04,             // jne _no_adjust
-        0x48, 0x83, 0xEC, 0x08, // sub rsp, 8
-    // _no adjust:
-            0x57,                                     // push rdi
-            0x67, 0x48, 0x8B, 0x7D, 0x38,             // mov rdi, [ebp + 56]
-            0x48, 0x85, 0xC0,                         // je _ls_e
-            0x74, 0x16, 0x48, 0x8D, 0x7C, 0xC7, 0xF8, // lea rdi, [rdi+rax*8-8]
-    // _ls:
-            0x48, 0x85, 0xC0,       // test rax, rax
-            0x74, 0x0C,             // je _ls_e
-            0xFF, 0x37,             // push [rdi]
-            0x48, 0x83, 0xEF, 0x08, // sub rdi, 8
-            0x48, 0x83, 0xE8, 0x01, // sub rax, 1
-            0xEB, 0xEF,             // jmp _ls
-    // _ls_e:
-        0x67, 0x8B, 0x7D, 0x40,       // mov edi, [ebp + 64]
-        0x48, 0x83, 0xEC, 0x20,       // sub rsp, 0x20
-        0x67, 0xFF, 0x55, 0x08,       // call [ebp + 0x8]
-        0x67, 0x48, 0x89, 0x07,       // mov [edi], rax
-        0x67, 0x48, 0x8B, 0x4D, 0x30, // mov rcx, [ebp+48]
-        0x48, 0x8D, 0x64, 0xCC, 0x20, // lea rsp, [rsp+rcx*8+0x20]
-        0x5F,                         // pop rdi
-
-     // exit 64 bit mode
-        0xE8, 0, 0, 0, 0, 0xC7, 0x44, 0x24, 4, 0x23, 0, 0, 0, 0x83, 4, 0x24, 0xD, 0xCB,
-
-        0x66, 0x8C, 0xD8, // mov ax, ds
-        0x8E, 0xD0,       // mov ss, eax
-
-        0x89, 0xEC, // mov esp, ebp
-        0x5D,       // pop ebp
-        0xC3        // ret
-    };
-    #pragma code_seg(pop, stack1)
-    // clang-format on
-
     using my_fn_sig = void(__cdecl*)(
         std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
         std::uint64_t, std::uint64_t, std::uint64_t, std::uint32_t);
 
     std::uint64_t ret;
-    reinterpret_cast<my_fn_sig>(&shellcode)(
+    reinterpret_cast<my_fn_sig>(&detail::call_function_shellcode)(
         func, arr_args[0], arr_args[1], arr_args[2], arr_args[3],
         sizeof...(Args) > 4 ? (sizeof...(Args) - 4) : 0,
         reinterpret_cast<std::uint64_t>(arr_args + 4),
@@ -652,6 +637,30 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
 
     return ret;
 }
+
+namespace detail {
+
+inline std::uint64_t get_cached_ldr_procedure_address(
+    std::error_code& ec) noexcept {
+    using ldr_result_t = std::expected<std::uint64_t, std::error_code>;
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
+        ldr_result_t, ldr_result, ([]() -> ldr_result_t {
+            std::error_code ec;
+            const auto ldr_result = detail::ldr_procedure_address(ec);
+            if (ec)
+                return std::unexpected(ec);
+            return ldr_result;
+        }()));
+    if (!ldr_result.has_value()) {
+        ec = ldr_result.error();
+        return 0;
+    }
+
+    ec.clear();
+    return *ldr_result;
+}
+
+}  // namespace detail
 
 /** \brief An equivalent of winapi GetProcAddress function.
  *   \param[in] hmodule The handle to the module in which to search for the
@@ -662,8 +671,12 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
  */
 inline std::uint64_t import(std::uint64_t hmodule,
                             std::string_view procedure_name) {
-    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(std::uint64_t, ldr_procedure_address_base,
-                                     detail::ldr_procedure_address());
+    std::error_code ec;
+    const auto ldr_procedure_address_base =
+        detail::get_cached_ldr_procedure_address(ec);
+    if (ec) {
+        detail::throw_error_code(ec);
+    }
 
     defs::UNICODE_STRING_64 unicode_fun_name = {0};
     unicode_fun_name.Length =
@@ -696,22 +709,11 @@ inline std::uint64_t import(std::uint64_t hmodule,
 inline std::uint64_t import(std::uint64_t hmodule,
                             std::string_view procedure_name,
                             std::error_code& ec) {
-    using ldr_result_t = std::expected<std::uint64_t, std::error_code>;
-    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
-        ldr_result_t, ldr_result, ([]() -> ldr_result_t {
-            std::error_code ec;
-            const auto ldr_result = detail::ldr_procedure_address(ec);
-            if (ec)
-                return std::unexpected(ec);
-            return ldr_result;
-        }()));
-
-    if (!ldr_result.has_value()) {
-        ec = ldr_result.error();
+    const auto ldr_procedure_address_base =
+        detail::get_cached_ldr_procedure_address(ec);
+    if (ec) {
         return 0;
     }
-
-    const auto ldr_procedure_address_base = *ldr_result;
 
     defs::UNICODE_STRING_64 unicode_fun_name = {0};
     unicode_fun_name.Length =
