@@ -10,6 +10,21 @@
 #include "Catch/single_include/catch2/catch.hpp"
 
 TEST_CASE("basic") {
+    std::error_code ec;
+    auto ntdll = wow64pp::module_handle("ntdll.dll", ec);
+    REQUIRE(!ec);
+    auto fn = wow64pp::import(ntdll, "NtGetTickCount", ec);
+    REQUIRE(!ec);
+    wow64pp::call_function(fn);
+}
+
+TEST_CASE("basic_exceptions") {
+    auto ntdll = wow64pp::module_handle("ntdll.dll");
+    auto fn = wow64pp::import(ntdll, "NtGetTickCount");
+    wow64pp::call_function(fn);
+}
+
+TEST_CASE("read_virtual_memory_rand") {
     auto ntdll = wow64pp::module_handle("ntdll.dll");
     std::error_code ec;
     auto fn = wow64pp::import(ntdll, "NtReadVirtualMemory", ec);
