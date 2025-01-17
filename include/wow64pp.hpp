@@ -258,7 +258,7 @@ inline std::uint64_t peb_address(std::error_code& ec) noexcept {
                                          0,  // ProcessBasicInformation
                                          &pbi, sizeof(pbi), nullptr);
     if (hres < 0)
-        ec = detail::get_last_error();
+        ec = get_last_error();
 
     return pbi.PebBaseAddress;
 }
@@ -385,7 +385,7 @@ inline std::uint64_t module_handle(std::string_view module_name) {
  *   \exception Does not throw.
  */
 inline std::uint64_t module_handle(std::string_view module_name,
-                                   std::error_code& ec) {
+                                   std::error_code& ec) noexcept {
     const auto ldr_base =
         detail::read_memory<defs::PEB_64>(detail::peb_address(ec), ec).Ldr;
     if (ec)
@@ -420,9 +420,10 @@ inline std::uint64_t module_handle(std::string_view module_name,
             continue;
 
         if (std::equal(begin(module_name), end(module_name),
-                       other_module_name.get()))
+                       other_module_name.get())) {
+            ec.clear();
             return head.DllBase;
-
+        }
     } while (head.InLoadOrderLinks.Flink != last_entry);
 
     if (!ec)
@@ -506,7 +507,7 @@ inline std::uint64_t ldr_procedure_address() {
         "could find x64 LdrGetProcedureAddress()");
 }
 
-inline std::uint64_t ldr_procedure_address(std::error_code& ec) {
+inline std::uint64_t ldr_procedure_address(std::error_code& ec) noexcept {
     const auto ntdll_base = module_handle("ntdll.dll", ec);
     if (ec)
         return 0;
@@ -545,8 +546,10 @@ inline std::uint64_t ldr_procedure_address(std::error_code& ec) {
         if (ec)
             continue;
 
-        if (std::equal(std::begin(to_find), std::end(to_find), buffer))
+        if (std::equal(std::begin(to_find), std::end(to_find), buffer)) {
+            ec.clear();
             return ntdll_base + rva_table[ord_table[i]];
+        }
     }
 
     ec = std::error_code(STATUS_ORDINAL_NOT_FOUND, std::system_category());
@@ -620,7 +623,7 @@ static const std::uint8_t call_function_shellcode[] = {
  *   \exception Does not throw.
  */
 template <class... Args>
-inline std::uint64_t call_function(std::uint64_t func, Args... args) {
+inline std::uint64_t call_function(std::uint64_t func, Args... args) noexcept {
     std::uint64_t arr_args[sizeof...(args) > 4 ? sizeof...(args) : 4] = {
         (std::uint64_t)(args)...};
 
@@ -646,7 +649,7 @@ inline std::uint64_t get_cached_ldr_procedure_address(
     WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
         ldr_result_t, ldr_result, ([]() -> ldr_result_t {
             std::error_code ec;
-            const auto ldr_result = detail::ldr_procedure_address(ec);
+            const auto ldr_result = ldr_procedure_address(ec);
             if (ec)
                 return std::unexpected(ec);
             return ldr_result;
@@ -708,7 +711,7 @@ inline std::uint64_t import(std::uint64_t hmodule,
  */
 inline std::uint64_t import(std::uint64_t hmodule,
                             std::string_view procedure_name,
-                            std::error_code& ec) {
+                            std::error_code& ec) noexcept {
     const auto ldr_procedure_address_base =
         detail::get_cached_ldr_procedure_address(ec);
     if (ec) {
@@ -735,7 +738,7 @@ inline std::uint64_t import(std::uint64_t hmodule,
  *   \exception Does not throw.
  */
 template <typename T>
-inline std::uint64_t ptr_to_uint64(T* ptr) {
+inline std::uint64_t ptr_to_uint64(T* ptr) noexcept {
     static_assert(sizeof(ptr) == sizeof(std::uint32_t),
                   "expecting 32-bit pointers");
 
@@ -749,7 +752,7 @@ inline std::uint64_t ptr_to_uint64(T* ptr) {
  *   \return    The 64 bit integer argument.
  *   \exception Does not throw.
  */
-inline std::uint64_t handle_to_uint64(HANDLE handle) {
+inline std::uint64_t handle_to_uint64(HANDLE handle) noexcept {
     static_assert(sizeof(handle) == sizeof(std::int32_t),
                   "expecting 32-bit handles");
 
