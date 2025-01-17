@@ -107,97 +107,6 @@ struct LDR_DATA_TABLE_ENTRY_64 {
     UNICODE_STRING_64 BaseDllName;
 };
 
-struct IMAGE_EXPORT_DIRECTORY {
-    unsigned long Characteristics;
-    unsigned long TimeDateStamp;
-    unsigned short MajorVersion;
-    unsigned short MinorVersion;
-    unsigned long Name;
-    unsigned long Base;
-    unsigned long NumberOfFunctions;
-    unsigned long NumberOfNames;
-    unsigned long AddressOfFunctions;     // RVA from base of image
-    unsigned long AddressOfNames;         // RVA from base of image
-    unsigned long AddressOfNameOrdinals;  // RVA from base of image
-};
-
-struct IMAGE_DOS_HEADER {       // DOS .EXE header
-    unsigned short e_magic;     // Magic number
-    unsigned short e_cblp;      // Bytes on last page of file
-    unsigned short e_cp;        // Pages in file
-    unsigned short e_crlc;      // Relocations
-    unsigned short e_cparhdr;   // Size of header in paragraphs
-    unsigned short e_minalloc;  // Minimum extra paragraphs needed
-    unsigned short e_maxalloc;  // Maximum extra paragraphs needed
-    unsigned short e_ss;        // Initial (relative) SS value
-    unsigned short e_sp;        // Initial SP value
-    unsigned short e_csum;      // Checksum
-    unsigned short e_ip;        // Initial IP value
-    unsigned short e_cs;        // Initial (relative) CS value
-    unsigned short e_lfarlc;    // File address of relocation table
-    unsigned short e_ovno;      // Overlay number
-    unsigned short e_res[4];    // Reserved words
-    unsigned short e_oemid;     // OEM identifier (for e_oeminfo)
-    unsigned short e_oeminfo;   // OEM information; e_oemid specific
-    unsigned short e_res2[10];  // Reserved words
-    long e_lfanew;              // File address of new exe header
-};
-
-struct IMAGE_FILE_HEADER {
-    unsigned short Machine;
-    unsigned short NumberOfSections;
-    unsigned long TimeDateStamp;
-    unsigned long PointerToSymbolTable;
-    unsigned long NumberOfSymbols;
-    unsigned short SizeOfOptionalHeader;
-    unsigned short Characteristics;
-};
-
-struct IMAGE_DATA_DIRECTORY {
-    unsigned long VirtualAddress;
-    unsigned long Size;
-};
-
-struct IMAGE_OPTIONAL_HEADER64 {
-    constexpr static std::size_t image_num_dir_entries = 16;
-    unsigned short Magic;
-    unsigned char MajorLinkerVersion;
-    unsigned char MinorLinkerVersion;
-    unsigned long SizeOfCode;
-    unsigned long SizeOfInitializedData;
-    unsigned long SizeOfUninitializedData;
-    unsigned long AddressOfEntryPoint;
-    unsigned long BaseOfCode;
-    std::uint64_t ImageBase;
-    unsigned long SectionAlignment;
-    unsigned long FileAlignment;
-    unsigned short MajorOperatingSystemVersion;
-    unsigned short MinorOperatingSystemVersion;
-    unsigned short MajorImageVersion;
-    unsigned short MinorImageVersion;
-    unsigned short MajorSubsystemVersion;
-    unsigned short MinorSubsystemVersion;
-    unsigned long Win32VersionValue;
-    unsigned long SizeOfImage;
-    unsigned long SizeOfHeaders;
-    unsigned long CheckSum;
-    unsigned short Subsystem;
-    unsigned short DllCharacteristics;
-    std::uint64_t SizeOfStackReserve;
-    std::uint64_t SizeOfStackCommit;
-    std::uint64_t SizeOfHeapReserve;
-    std::uint64_t SizeOfHeapCommit;
-    unsigned long LoaderFlags;
-    unsigned long NumberOfRvaAndSizes;
-    IMAGE_DATA_DIRECTORY DataDirectory[image_num_dir_entries];
-};
-
-struct IMAGE_NT_HEADERS64 {
-    unsigned long Signature;
-    IMAGE_FILE_HEADER FileHeader;
-    IMAGE_OPTIONAL_HEADER64 OptionalHeader;
-};
-
 }  // namespace defs
 
 namespace detail {
@@ -540,12 +449,11 @@ inline std::uint64_t module_handle(const std::string& module_name,
 
 namespace detail {
 
-inline defs::IMAGE_EXPORT_DIRECTORY image_export_dir(std::uint64_t ntdll_base) {
-    const auto e_lfanew =
-        read_memory<defs::IMAGE_DOS_HEADER>(ntdll_base).e_lfanew;
+inline IMAGE_EXPORT_DIRECTORY image_export_dir(std::uint64_t ntdll_base) {
+    const auto e_lfanew = read_memory<IMAGE_DOS_HEADER>(ntdll_base).e_lfanew;
 
     const auto idd_virtual_addr =
-        read_memory<defs::IMAGE_NT_HEADERS64>(ntdll_base + e_lfanew)
+        read_memory<IMAGE_NT_HEADERS64>(ntdll_base + e_lfanew)
             .OptionalHeader.DataDirectory[image_directory_entry_export]
             .VirtualAddress;
 
@@ -553,20 +461,18 @@ inline defs::IMAGE_EXPORT_DIRECTORY image_export_dir(std::uint64_t ntdll_base) {
         throw std::runtime_error(
             "IMAGE_EXPORT_DIRECTORY::VirtualAddress was 0");
 
-    return read_memory<defs::IMAGE_EXPORT_DIRECTORY>(ntdll_base +
-                                                     idd_virtual_addr);
+    return read_memory<IMAGE_EXPORT_DIRECTORY>(ntdll_base + idd_virtual_addr);
 }
 
-inline defs::IMAGE_EXPORT_DIRECTORY image_export_dir(
-    std::uint64_t ntdll_base,
-    std::error_code& ec) noexcept {
+inline IMAGE_EXPORT_DIRECTORY image_export_dir(std::uint64_t ntdll_base,
+                                               std::error_code& ec) noexcept {
     const auto e_lfanew =
-        read_memory<defs::IMAGE_DOS_HEADER>(ntdll_base, ec).e_lfanew;
+        read_memory<IMAGE_DOS_HEADER>(ntdll_base, ec).e_lfanew;
     if (ec)
         return {};
 
     const auto idd_virtual_addr =
-        read_memory<defs::IMAGE_NT_HEADERS64>(ntdll_base + e_lfanew, ec)
+        read_memory<IMAGE_NT_HEADERS64>(ntdll_base + e_lfanew, ec)
             .OptionalHeader.DataDirectory[image_directory_entry_export]
             .VirtualAddress;
     if (ec)
@@ -577,8 +483,8 @@ inline defs::IMAGE_EXPORT_DIRECTORY image_export_dir(
         return {};
     }
 
-    return read_memory<defs::IMAGE_EXPORT_DIRECTORY>(
-        ntdll_base + idd_virtual_addr, ec);
+    return read_memory<IMAGE_EXPORT_DIRECTORY>(ntdll_base + idd_virtual_addr,
+                                               ec);
 }
 
 inline std::uint64_t ldr_procedure_address() {
