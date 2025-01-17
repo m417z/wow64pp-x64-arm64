@@ -24,6 +24,7 @@
 #include <cstring>  // memcpy
 #include <expected>
 #include <memory>
+#include <string_view>
 #include <system_error>
 
 // The following macros are used to initialize static variables once in a
@@ -355,7 +356,7 @@ inline T read_memory(std::uint64_t address, std::error_code& ec) noexcept {
  *   \return    The handle to the module as a 64 bit integer.
  *   \exception Throws std::system_error on failure.
  */
-inline std::uint64_t module_handle(const std::string& module_name) {
+inline std::uint64_t module_handle(std::string_view module_name) {
     const auto ldr_base =
         detail::read_memory<defs::PEB_64>(detail::peb_address()).Ldr;
 
@@ -400,7 +401,7 @@ inline std::uint64_t module_handle(const std::string& module_name) {
  *   \return    The handle to the module as a 64 bit integer.
  *   \exception Does not throw.
  */
-inline std::uint64_t module_handle(const std::string& module_name,
+inline std::uint64_t module_handle(std::string_view module_name,
                                    std::error_code& ec) {
     const auto ldr_base =
         detail::read_memory<defs::PEB_64>(detail::peb_address(ec), ec).Ldr;
@@ -504,16 +505,16 @@ inline std::uint64_t ldr_procedure_address() {
     read_memory(ntdll_base + ied.AddressOfNames, name_table.get(),
                 sizeof(unsigned long) * ied.NumberOfNames);
 
-    const std::string to_find("LdrGetProcedureAddress");
-    std::string buffer = to_find;
+    const char to_find[] = "LdrGetProcedureAddress";
+    char buffer[std::size(to_find)] = "";
 
     const std::size_t n =
         (ied.NumberOfFunctions > ied.NumberOfNames ? ied.NumberOfNames
                                                    : ied.NumberOfFunctions);
     for (std::size_t i = 0; i < n; ++i) {
-        read_memory(ntdll_base + name_table[i], &buffer[0], buffer.size());
+        read_memory(ntdll_base + name_table[i], &buffer);
 
-        if (buffer == to_find)
+        if (std::equal(std::begin(to_find), std::end(to_find), buffer))
             return ntdll_base + rva_table[ord_table[i]];
     }
 
@@ -549,20 +550,19 @@ inline std::uint64_t ldr_procedure_address(std::error_code& ec) {
     if (ec)
         return 0;
 
-    const std::string to_find("LdrGetProcedureAddress");
-    std::string buffer;
-    buffer.resize(to_find.size());
+    const char to_find[] = "LdrGetProcedureAddress";
+    char buffer[std::size(to_find)] = "";
 
     const std::size_t n = ied.NumberOfFunctions > ied.NumberOfNames
                               ? ied.NumberOfNames
                               : ied.NumberOfFunctions;
 
     for (std::size_t i = 0; i < n; ++i) {
-        read_memory(ntdll_base + name_table[i], &buffer[0], buffer.size(), ec);
+        read_memory(ntdll_base + name_table[i], &buffer, sizeof(buffer), ec);
         if (ec)
             continue;
 
-        if (buffer == to_find)
+        if (std::equal(std::begin(to_find), std::end(to_find), buffer))
             return ntdll_base + rva_table[ord_table[i]];
     }
 
@@ -601,7 +601,6 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
         0x67, 0x4C, 0x8B, 0x4D, 40, // mov r9,  [ebp + 40]
 
         0x67, 0x48, 0x8B, 0x45, 48, // mov rax, [ebp + 48] args count
-
 
         0xA8, 0x01,             // test al, 1
         0x75, 0x04,             // jne _no_adjust
@@ -662,7 +661,7 @@ inline std::uint64_t call_function(std::uint64_t func, Args... args) {
  *   \exception Throws std::system_error on failure.
  */
 inline std::uint64_t import(std::uint64_t hmodule,
-                            const std::string& procedure_name) {
+                            std::string_view procedure_name) {
     WOW64PP_STATIC_INIT_ONCE_TRIVIAL(std::uint64_t, ldr_procedure_address_base,
                                      detail::ldr_procedure_address());
 
@@ -695,7 +694,7 @@ inline std::uint64_t import(std::uint64_t hmodule,
  *   \exception  Does not throw.
  */
 inline std::uint64_t import(std::uint64_t hmodule,
-                            const std::string& procedure_name,
+                            std::string_view procedure_name,
                             std::error_code& ec) {
     using ldr_result_t = std::expected<std::uint64_t, std::error_code>;
     WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
