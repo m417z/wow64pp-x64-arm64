@@ -575,7 +575,7 @@ inline std::uint64_t ldr_procedure_address(std::error_code& ec) {
 /** \brief Calls a 64 bit function from 32 bit process
  *   \param[in] func The address of 64 bit function to be called.
  *   \param[in] args... The arguments for the function to be called.
- *   \return    An error_code specifying whether the call succeeded.
+ *   \return    The return value of the called function.
  *   \exception Does not throw.
  */
 template <class... Args>
