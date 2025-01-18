@@ -53,21 +53,23 @@
 
 namespace wow64pp {
 
+typedef LONG NTSTATUS;
+
 namespace defs {
 
 using NtWow64QueryInformationProcess64T =
-    long(__stdcall*)(void* ProcessHandle,
-                     unsigned long ProcessInformationClass,
-                     void* ProcessInformation,
-                     unsigned long ProcessInformationLength,
-                     unsigned long* ReturnLength);
+    NTSTATUS(__stdcall*)(HANDLE ProcessHandle,
+                         std::uint32_t ProcessInformationClass,
+                         void* ProcessInformation,
+                         std::uint32_t ProcessInformationLength,
+                         std::uint32_t* ReturnLength);
 
 using NtWow64ReadVirtualMemory64T =
-    long(__stdcall*)(void* ProcessHandle,
-                     unsigned __int64 BaseAddress,
-                     void* Buffer,
-                     unsigned __int64 Size,
-                     unsigned __int64* NumberOfBytesRead);
+    NTSTATUS(__stdcall*)(HANDLE ProcessHandle,
+                         std::uint64_t BaseAddress,
+                         void* Buffer,
+                         std::uint64_t Size,
+                         std::uint64_t* NumberOfBytesRead);
 
 struct LIST_ENTRY_64 {
     std::uint64_t Flink;
@@ -75,8 +77,8 @@ struct LIST_ENTRY_64 {
 };
 
 struct UNICODE_STRING_64 {
-    unsigned short Length;
-    unsigned short MaximumLength;
+    std::uint16_t Length;
+    std::uint16_t MaximumLength;
     std::uint64_t Buffer;
 };
 
@@ -87,14 +89,14 @@ struct PROCESS_BASIC_INFORMATION_64 {
 };
 
 struct PEB_64 {
-    unsigned char unused_1_[4];
+    std::uint8_t unused_1_[4];
     std::uint64_t unused_2_[2];
     std::uint64_t Ldr;
 };
 
 struct PEB_LDR_DATA_64 {
-    unsigned long Length;
-    unsigned long Initialized;
+    std::uint32_t Length;
+    std::uint32_t Initialized;
     std::uint64_t SsHandle;
     LIST_ENTRY_64 InLoadOrderModuleList;
 };
@@ -106,7 +108,7 @@ struct LDR_DATA_TABLE_ENTRY_64 {
     std::uint64_t DllBase;
     std::uint64_t EntryPoint;
     union {
-        unsigned long SizeOfImage;
+        std::uint32_t SizeOfImage;
         std::uint64_t dummy_;
     };
     UNICODE_STRING_64 FullDllName;
@@ -135,19 +137,21 @@ inline std::error_code get_last_error() noexcept {
     throw std::system_error(get_last_error(), message);
 }
 
-inline void throw_if_failed(const char* message, HRESULT hr) {
-    if (FAILED(hr))
-        throw std::system_error(std::error_code(hr, std::system_category()),
+inline void throw_if_failed(const char* message, NTSTATUS status) {
+    if (status < 0) {
+        throw std::system_error(std::error_code(status, std::system_category()),
                                 message);
+    }
 }
 
 inline HANDLE self_handle() {
     HANDLE h;
 
-    if (DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
-                        GetCurrentProcess(), &h, 0, 0,
-                        DUPLICATE_SAME_ACCESS) == 0)
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
+                         GetCurrentProcess(), &h, 0, 0,
+                         DUPLICATE_SAME_ACCESS)) {
         throw_last_error("failed to duplicate current process handle");
+    }
 
     return h;
 }
@@ -155,25 +159,28 @@ inline HANDLE self_handle() {
 inline HANDLE self_handle(std::error_code& ec) noexcept {
     HANDLE h;
 
-    if (DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
-                        GetCurrentProcess(), &h, 0, 0,
-                        DUPLICATE_SAME_ACCESS) == 0)
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
+                         GetCurrentProcess(), &h, 0, 0,
+                         DUPLICATE_SAME_ACCESS)) {
         ec = get_last_error();
-    else
-        ec.clear();
+        return nullptr;
+    }
 
+    ec.clear();
     return h;
 }
 
 template <typename F>
 inline F native_ntdll_function(const char* name) {
     const auto ntdll_addr = GetModuleHandleW(L"ntdll.dll");
-    if (ntdll_addr == nullptr)
+    if (!ntdll_addr) {
         throw_last_error("GetModuleHandle() failed");
+    }
 
     auto f = reinterpret_cast<F>(GetProcAddress(ntdll_addr, name));
-    if (f == nullptr)
+    if (!f) {
         throw_last_error("failed to get address of ntdll function");
+    }
 
     return f;
 }
@@ -181,13 +188,13 @@ inline F native_ntdll_function(const char* name) {
 template <typename F>
 inline F native_ntdll_function(const char* name, std::error_code& ec) noexcept {
     const auto ntdll_addr = GetModuleHandleW(L"ntdll.dll");
-    if (ntdll_addr == nullptr) {
+    if (!ntdll_addr) {
         ec = get_last_error();
         return nullptr;
     }
 
     const auto f = reinterpret_cast<F>(GetProcAddress(ntdll_addr, name));
-    if (f == nullptr) {
+    if (!f) {
         ec = get_last_error();
         return nullptr;
     }
@@ -262,8 +269,9 @@ inline std::uint64_t peb_address(std::error_code& ec) noexcept {
         NtWow64QueryInformationProcess64(GetCurrentProcess(),
                                          0,  // ProcessBasicInformation
                                          &pbi, sizeof(pbi), nullptr);
-    if (hres < 0)
+    if (hres < 0) {
         ec = get_last_error();
+    }
 
     return pbi.PebBaseAddress;
 }
@@ -314,13 +322,16 @@ inline void read_memory(std::uint64_t address,
     }
 
     HANDLE h_self = self_handle(ec);
-    if (ec)
+    if (ec) {
         return;
+    }
+
     auto hres =
         NtWow64ReadVirtualMemory64(h_self, address, buffer, size, nullptr);
     CloseHandle(h_self);
-    if (hres < 0)
+    if (hres < 0) {
         ec = get_last_error();
+    }
 }
 
 template <typename T>
@@ -365,8 +376,9 @@ inline std::uint64_t module_handle(std::string_view module_name) {
 
         const auto other_module_name_len =
             head.BaseDllName.Length / sizeof(wchar_t);
-        if (other_module_name_len != module_name.length())
+        if (other_module_name_len != module_name.length()) {
             continue;
+        }
 
         auto other_module_name =
             std::make_unique<wchar_t[]>(other_module_name_len);
@@ -374,8 +386,9 @@ inline std::uint64_t module_handle(std::string_view module_name) {
                             head.BaseDllName.Length);
 
         if (std::equal(begin(module_name), end(module_name),
-                       other_module_name.get()))
+                       other_module_name.get())) {
             return head.DllBase;
+        }
     } while (head.InLoadOrderLinks.Flink != last_entry);
 
     throw std::system_error(
@@ -393,8 +406,9 @@ inline std::uint64_t module_handle(std::string_view module_name,
                                    std::error_code& ec) noexcept {
     const auto ldr_base =
         detail::read_memory<defs::PEB_64>(detail::peb_address(ec), ec).Ldr;
-    if (ec)
+    if (ec) {
         return 0;
+    }
 
     const auto last_entry =
         ldr_base + offsetof(defs::PEB_LDR_DATA_64, InLoadOrderModuleList);
@@ -403,26 +417,30 @@ inline std::uint64_t module_handle(std::string_view module_name,
     head.InLoadOrderLinks.Flink =
         detail::read_memory<defs::PEB_LDR_DATA_64>(ldr_base, ec)
             .InLoadOrderModuleList.Flink;
-    if (ec)
+    if (ec) {
         return 0;
+    }
 
     do {
         detail::read_memory(head.InLoadOrderLinks.Flink, &head, sizeof(head),
                             ec);
-        if (ec)
+        if (ec) {
             continue;
+        }
 
         const auto other_module_name_len =
             head.BaseDllName.Length / sizeof(wchar_t);
-        if (other_module_name_len != module_name.length())
+        if (other_module_name_len != module_name.length()) {
             continue;
+        }
 
         auto other_module_name =
             std::make_unique<wchar_t[]>(other_module_name_len);
         detail::read_memory(head.BaseDllName.Buffer, other_module_name.get(),
                             head.BaseDllName.Length, ec);
-        if (ec)
+        if (ec) {
             continue;
+        }
 
         if (std::equal(begin(module_name), end(module_name),
                        other_module_name.get())) {
@@ -431,8 +449,9 @@ inline std::uint64_t module_handle(std::string_view module_name,
         }
     } while (head.InLoadOrderLinks.Flink != last_entry);
 
-    if (!ec)
+    if (!ec) {
         ec = std::error_code(ERROR_MOD_NOT_FOUND, std::system_category());
+    }
 
     return 0;
 }
@@ -447,9 +466,10 @@ inline IMAGE_EXPORT_DIRECTORY image_export_dir(std::uint64_t ntdll_base) {
             .OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT]
             .VirtualAddress;
 
-    if (idd_virtual_addr == 0)
+    if (!idd_virtual_addr) {
         throw std::runtime_error(
             "IMAGE_EXPORT_DIRECTORY::VirtualAddress was 0");
+    }
 
     return read_memory<IMAGE_EXPORT_DIRECTORY>(ntdll_base + idd_virtual_addr);
 }
@@ -458,15 +478,17 @@ inline IMAGE_EXPORT_DIRECTORY image_export_dir(std::uint64_t ntdll_base,
                                                std::error_code& ec) noexcept {
     const auto e_lfanew =
         read_memory<IMAGE_DOS_HEADER>(ntdll_base, ec).e_lfanew;
-    if (ec)
+    if (ec) {
         return {};
+    }
 
     const auto idd_virtual_addr =
         read_memory<IMAGE_NT_HEADERS64>(ntdll_base + e_lfanew, ec)
             .OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT]
             .VirtualAddress;
-    if (ec)
+    if (ec) {
         return {};
+    }
 
     if (idd_virtual_addr == 0) {
         ec = std::error_code(ERROR_PROC_NOT_FOUND, std::system_category());
@@ -482,17 +504,17 @@ inline std::uint64_t ldr_procedure_address() {
 
     const auto ied = image_export_dir(ntdll_base);
 
-    auto rva_table = std::make_unique<unsigned long[]>(ied.NumberOfFunctions);
+    auto rva_table = std::make_unique<std::uint32_t[]>(ied.NumberOfFunctions);
     read_memory(ntdll_base + ied.AddressOfFunctions, rva_table.get(),
-                sizeof(unsigned long) * ied.NumberOfFunctions);
+                sizeof(std::uint32_t) * ied.NumberOfFunctions);
 
-    auto ord_table = std::make_unique<unsigned short[]>(ied.NumberOfFunctions);
+    auto ord_table = std::make_unique<std::uint16_t[]>(ied.NumberOfFunctions);
     read_memory(ntdll_base + ied.AddressOfNameOrdinals, ord_table.get(),
-                sizeof(unsigned short) * ied.NumberOfFunctions);
+                sizeof(std::uint16_t) * ied.NumberOfFunctions);
 
-    auto name_table = std::make_unique<unsigned long[]>(ied.NumberOfNames);
+    auto name_table = std::make_unique<std::uint32_t[]>(ied.NumberOfNames);
     read_memory(ntdll_base + ied.AddressOfNames, name_table.get(),
-                sizeof(unsigned long) * ied.NumberOfNames);
+                sizeof(std::uint32_t) * ied.NumberOfNames);
 
     const char to_find[] = "LdrGetProcedureAddress";
     char buffer[std::size(to_find)] = "";
@@ -503,8 +525,9 @@ inline std::uint64_t ldr_procedure_address() {
     for (std::size_t i = 0; i < n; ++i) {
         read_memory(ntdll_base + name_table[i], &buffer);
 
-        if (std::equal(std::begin(to_find), std::end(to_find), buffer))
+        if (std::equal(std::begin(to_find), std::end(to_find), buffer)) {
             return ntdll_base + rva_table[ord_table[i]];
+        }
     }
 
     throw std::system_error(
@@ -514,30 +537,35 @@ inline std::uint64_t ldr_procedure_address() {
 
 inline std::uint64_t ldr_procedure_address(std::error_code& ec) noexcept {
     const auto ntdll_base = module_handle("ntdll.dll", ec);
-    if (ec)
+    if (ec) {
         return 0;
+    }
 
     const auto ied = image_export_dir(ntdll_base, ec);
-    if (ec)
+    if (ec) {
         return 0;
+    }
 
-    auto rva_table = std::make_unique<unsigned long[]>(ied.NumberOfFunctions);
+    auto rva_table = std::make_unique<std::uint32_t[]>(ied.NumberOfFunctions);
     read_memory(ntdll_base + ied.AddressOfFunctions, rva_table.get(),
-                sizeof(unsigned long) * ied.NumberOfFunctions, ec);
-    if (ec)
+                sizeof(std::uint32_t) * ied.NumberOfFunctions, ec);
+    if (ec) {
         return 0;
+    }
 
-    auto ord_table = std::make_unique<unsigned short[]>(ied.NumberOfFunctions);
+    auto ord_table = std::make_unique<std::uint16_t[]>(ied.NumberOfFunctions);
     read_memory(ntdll_base + ied.AddressOfNameOrdinals, ord_table.get(),
-                sizeof(unsigned short) * ied.NumberOfFunctions, ec);
-    if (ec)
+                sizeof(std::uint16_t) * ied.NumberOfFunctions, ec);
+    if (ec) {
         return 0;
+    }
 
-    auto name_table = std::make_unique<unsigned long[]>(ied.NumberOfNames);
+    auto name_table = std::make_unique<std::uint32_t[]>(ied.NumberOfNames);
     read_memory(ntdll_base + ied.AddressOfNames, name_table.get(),
-                sizeof(unsigned long) * ied.NumberOfNames, ec);
-    if (ec)
+                sizeof(std::uint32_t) * ied.NumberOfNames, ec);
+    if (ec) {
         return 0;
+    }
 
     const char to_find[] = "LdrGetProcedureAddress";
     char buffer[std::size(to_find)] = "";
@@ -548,8 +576,9 @@ inline std::uint64_t ldr_procedure_address(std::error_code& ec) noexcept {
 
     for (std::size_t i = 0; i < n; ++i) {
         read_memory(ntdll_base + name_table[i], &buffer, sizeof(buffer), ec);
-        if (ec)
+        if (ec) {
             continue;
+        }
 
         if (std::equal(std::begin(to_find), std::end(to_find), buffer)) {
             ec.clear();
@@ -639,60 +668,61 @@ inline std::uint64_t call_function_x64(std::uint64_t func,
     return ret;
 }
 
-std::uint64_t* find_import_ptr_64(HMODULE hFindInModule,
-                                  PCSTR pModuleName,
-                                  PCSTR pImportName) noexcept {
-    IMAGE_DOS_HEADER* pDosHeader = (IMAGE_DOS_HEADER*)hFindInModule;
-    IMAGE_NT_HEADERS64* pNtHeader =
-        (IMAGE_NT_HEADERS64*)((char*)pDosHeader + pDosHeader->e_lfanew);
+std::uint64_t* find_import_ptr_64(HMODULE module,
+                                  const char* module_name,
+                                  const char* import_name) noexcept {
+    IMAGE_DOS_HEADER* dos_header = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
+    IMAGE_NT_HEADERS64* nt_header = reinterpret_cast<IMAGE_NT_HEADERS64*>(
+        reinterpret_cast<std::byte*>(dos_header) + dos_header->e_lfanew);
 
-    if (!pNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]
+    if (!nt_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]
              .VirtualAddress) {
         return nullptr;
     }
 
-    ULONG_PTR ImageBase = (ULONG_PTR)hFindInModule;
-    IMAGE_IMPORT_DESCRIPTOR* pImportDescriptor =
-        (IMAGE_IMPORT_DESCRIPTOR*)(ImageBase +
-                                   pNtHeader->OptionalHeader.DataDirectory[1]
-                                       .VirtualAddress);
+    std::byte* image_base = reinterpret_cast<std::byte*>(module);
+    IMAGE_IMPORT_DESCRIPTOR* import_descriptor =
+        reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
+            image_base + nt_header->OptionalHeader
+                             .DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]
+                             .VirtualAddress);
 
-    while (pImportDescriptor->OriginalFirstThunk) {
-        if (_stricmp((char*)(ImageBase + pImportDescriptor->Name),
-                     pModuleName) == 0) {
-            IMAGE_THUNK_DATA64* pOriginalFirstThunk =
-                (IMAGE_THUNK_DATA64*)(ImageBase +
-                                      pImportDescriptor->OriginalFirstThunk);
-            IMAGE_THUNK_DATA64* pFirstThunk =
-                (IMAGE_THUNK_DATA64*)(ImageBase +
-                                      pImportDescriptor->FirstThunk);
+    while (import_descriptor->OriginalFirstThunk) {
+        if (_stricmp(reinterpret_cast<const char*>(image_base +
+                                                   import_descriptor->Name),
+                     module_name) == 0) {
+            IMAGE_THUNK_DATA64* original_first_think =
+                reinterpret_cast<IMAGE_THUNK_DATA64*>(
+                    image_base + import_descriptor->OriginalFirstThunk);
+            IMAGE_THUNK_DATA64* first_think =
+                reinterpret_cast<IMAGE_THUNK_DATA64*>(
+                    image_base + import_descriptor->FirstThunk);
 
-            while (ULONGLONG ImageImportByName =
-                       pOriginalFirstThunk->u1.Function) {
-                if (!IMAGE_SNAP_BY_ORDINAL64(ImageImportByName)) {
-                    if ((ULONG_PTR)pImportName & ~0xFFFF) {
-                        ImageImportByName += sizeof(WORD);
-
-                        if (strcmp((char*)(ImageBase + ImageImportByName),
-                                   pImportName) == 0) {
-                            return &pFirstThunk->u1.Function;
+            while (std::uint64_t iter = original_first_think->u1.Function) {
+                if (!IMAGE_SNAP_BY_ORDINAL64(iter)) {
+                    if (reinterpret_cast<std::uint64_t>(import_name) &
+                        ~0xFFFF) {
+                        if (strcmp(
+                                reinterpret_cast<const char*>(
+                                    image_base + iter + sizeof(std::uint16_t)),
+                                import_name) == 0) {
+                            return &first_think->u1.Function;
                         }
                     }
-                } else {
-                    if (((ULONG_PTR)pImportName & ~0xFFFF) == 0) {
-                        if (IMAGE_ORDINAL64(ImageImportByName) ==
-                            (ULONG_PTR)pImportName) {
-                            return &pFirstThunk->u1.Function;
-                        }
-                    }
+                } else if ((reinterpret_cast<std::uint64_t>(import_name) &
+                            ~0xFFFF) == 0 &&
+                           IMAGE_ORDINAL64(iter) ==
+                               IMAGE_ORDINAL64(reinterpret_cast<std::uint64_t>(
+                                   import_name))) {
+                    return &first_think->u1.Function;
                 }
 
-                pOriginalFirstThunk++;
-                pFirstThunk++;
+                original_first_think++;
+                first_think++;
             }
         }
 
-        pImportDescriptor++;
+        import_descriptor++;
     }
 
     return nullptr;
@@ -1124,8 +1154,7 @@ inline std::uint64_t import(std::uint64_t hmodule,
     }
 
     defs::UNICODE_STRING_64 unicode_fun_name = {0};
-    unicode_fun_name.Length =
-        static_cast<unsigned short>(procedure_name.size());
+    unicode_fun_name.Length = static_cast<std::uint16_t>(procedure_name.size());
     unicode_fun_name.MaximumLength = unicode_fun_name.Length + 1;
     const auto data = procedure_name.data();
     std::memcpy(&unicode_fun_name.Buffer, &data, 4);
@@ -1134,10 +1163,11 @@ inline std::uint64_t import(std::uint64_t hmodule,
     auto fn_ret =
         call_function(ldr_procedure_address_base, hmodule,
                       ptr_to_uint64(&unicode_fun_name), 0, ptr_to_uint64(&ret));
-    if (fn_ret)
+    if (fn_ret) {
         throw std::system_error(
             std::error_code(static_cast<int>(fn_ret), std::system_category()),
             "call_function(ldr_procedure_address_base...) failed");
+    }
 
     return ret;
 }
@@ -1160,8 +1190,7 @@ inline std::uint64_t import(std::uint64_t hmodule,
     }
 
     defs::UNICODE_STRING_64 unicode_fun_name = {0};
-    unicode_fun_name.Length =
-        static_cast<unsigned short>(procedure_name.size());
+    unicode_fun_name.Length = static_cast<std::uint16_t>(procedure_name.size());
     unicode_fun_name.MaximumLength = unicode_fun_name.Length;
     const auto data = procedure_name.data();
     std::memcpy(&unicode_fun_name.Buffer, &data, 4);
