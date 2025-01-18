@@ -15,7 +15,8 @@ TEST_CASE("basic") {
     REQUIRE(!ec);
     auto fn = wow64pp::import(ntdll, "NtGetTickCount", ec);
     REQUIRE(!ec);
-    wow64pp::call_function(fn);
+    wow64pp::call_function(ec, fn);
+    REQUIRE(!ec);
 }
 
 TEST_CASE("basic_exceptions") {
@@ -63,6 +64,7 @@ TEST_CASE("return_value_64bit") {
     std::uint64_t ptr = 0x1234567812345678;
 
     auto encoded = wow64pp::call_function(encode_fn, ptr);
+    REQUIRE(encoded != ptr);
     auto decoded = wow64pp::call_function(decode_fn, encoded);
     REQUIRE(decoded == ptr);
 }

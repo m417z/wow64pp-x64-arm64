@@ -11,6 +11,14 @@ struct wow64_system_service_ex_param_t {
 
 using wow64_system_service_ex_hook_t =
     std::uint32_t (*)(std::uint32_t syscall_num, std::uint32_t* syscall_args);
+
+#pragma code_seg(push, r1, ".text64$a")
+__declspec(allocate(".text64$a"))  //
+__declspec(dllexport) std::uint64_t wow64_system_service_ex_original =
+    0xD4200000D4200000;
+#pragma code_seg(pop, r1)
+
+#pragma code_seg(push, r1, ".text64$b")
 __declspec(dllexport) std::uint32_t wow64_system_service_ex_hook(
     std::uint32_t syscall_num,
     std::uint32_t* syscall_args) {
@@ -21,7 +29,7 @@ __declspec(dllexport) std::uint32_t wow64_system_service_ex_hook(
                                           sizeof(
                                               wow64_system_service_ex_hook_t*));
 
-    if (syscall_num != 0xFEAB) {
+    if (syscall_num != 0x0FEA) {
         return (*original)(syscall_num, syscall_args);
     }
 
@@ -108,6 +116,7 @@ __declspec(dllexport) std::uint32_t wow64_system_service_ex_hook(
     param->ret = result;
     return 0;
 }
+#pragma code_seg(pop, r1)
 
 int main() {
     // Silence is golden.
