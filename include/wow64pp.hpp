@@ -668,9 +668,9 @@ inline std::uint64_t call_function_x64(std::uint64_t func,
     return ret;
 }
 
-std::uint64_t* find_import_ptr_64(HMODULE module,
-                                  const char* module_name,
-                                  const char* import_name) noexcept {
+inline std::uint64_t* find_import_ptr_64(HMODULE module,
+                                         const char* module_name,
+                                         const char* import_name) noexcept {
     IMAGE_DOS_HEADER* dos_header = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
     IMAGE_NT_HEADERS64* nt_header = reinterpret_cast<IMAGE_NT_HEADERS64*>(
         reinterpret_cast<std::byte*>(dos_header) + dos_header->e_lfanew);
@@ -845,68 +845,68 @@ struct CALL_FUNCTION_ARM64_DATA {
     int call_count = 0;
 };
 
-CALL_FUNCTION_ARM64_DATA* get_call_function_arm64_data() {
-    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
-        std::optional<CALL_FUNCTION_ARM64_DATA>, function_result,
-        ([]() -> CALL_FUNCTION_ARM64_DATA {
-            std::error_code ec;
-            void** pp_wow64_transition =
-                native_ntdll_function<void**>("Wow64Transition", ec);
-            if (ec) {
-                return CALL_FUNCTION_ARM64_DATA{.ec = ec};
-            }
+inline CALL_FUNCTION_ARM64_DATA
+make_initial_call_function_arm64_data() noexcept {
+    std::error_code ec;
+    void** pp_wow64_transition =
+        native_ntdll_function<void**>("Wow64Transition", ec);
+    if (ec) {
+        return CALL_FUNCTION_ARM64_DATA{.ec = ec};
+    }
 
-            const auto wow64cpu_base = module_handle("xtajit.dll", ec);
-            if (ec) {
-                return CALL_FUNCTION_ARM64_DATA{.ec = ec};
-            }
+    const auto wow64cpu_base = module_handle("xtajit.dll", ec);
+    if (ec) {
+        return CALL_FUNCTION_ARM64_DATA{.ec = ec};
+    }
 
-            // Looks like the module is always mapped in the 32-bit address
-            // space.
-            //
-            // "[...] the address of wow64cpu!KiFastSystemCall is held in the
-            // 32-bit TEB (Thread Environment Block) via member WOW32Reserved"
-            // https://cloud.google.com/blog/topics/threat-intelligence/wow64-subsystem-internals-and-hooking-techniques/
-            if (wow64cpu_base > std::numeric_limits<std::uint32_t>::max()) {
-                return CALL_FUNCTION_ARM64_DATA{
-                    .ec = std::error_code(ERROR_INDEX_OUT_OF_BOUNDS,
-                                          std::system_category())};
-            }
+    // Looks like the module is always mapped in the 32-bit address space.
+    //
+    // "[...] the address of wow64cpu!KiFastSystemCall is held in the 32-bit TEB
+    // (Thread Environment Block) via member WOW32Reserved"
+    // https://cloud.google.com/blog/topics/threat-intelligence/wow64-subsystem-internals-and-hooking-techniques/
+    if (wow64cpu_base > std::numeric_limits<std::uint32_t>::max()) {
+        return CALL_FUNCTION_ARM64_DATA{
+            .ec = std::error_code(ERROR_INDEX_OUT_OF_BOUNDS,
+                                  std::system_category())};
+    }
 
-            std::uint64_t* pp_wow64_system_service_ex =
-                find_import_ptr_64(reinterpret_cast<HMODULE>(wow64cpu_base),
-                                   "wow64.dll", "Wow64SystemServiceEx");
-            if (!pp_wow64_system_service_ex) {
-                return CALL_FUNCTION_ARM64_DATA{
-                    .ec = std::error_code(ERROR_PROC_NOT_FOUND,
-                                          std::system_category())};
-            }
+    std::uint64_t* pp_wow64_system_service_ex =
+        find_import_ptr_64(reinterpret_cast<HMODULE>(wow64cpu_base),
+                           "wow64.dll", "Wow64SystemServiceEx");
+    if (!pp_wow64_system_service_ex) {
+        return CALL_FUNCTION_ARM64_DATA{
+            .ec =
+                std::error_code(ERROR_PROC_NOT_FOUND, std::system_category())};
+    }
 
-            std::uint64_t p_wow64_system_service_ex_original =
-                *pp_wow64_system_service_ex;
+    std::uint64_t p_wow64_system_service_ex_original =
+        *pp_wow64_system_service_ex;
 
-            DWORD dwOldProtect;
-            VirtualProtect(&wow64_system_service_ex.original,
-                           sizeof(wow64_system_service_ex.original),
-                           PAGE_READWRITE, &dwOldProtect);
-            wow64_system_service_ex.original =
-                p_wow64_system_service_ex_original;
-            VirtualProtect(&wow64_system_service_ex.original,
-                           sizeof(wow64_system_service_ex.original),
-                           dwOldProtect, &dwOldProtect);
+    DWORD dwOldProtect;
+    VirtualProtect(&wow64_system_service_ex.original,
+                   sizeof(wow64_system_service_ex.original), PAGE_READWRITE,
+                   &dwOldProtect);
+    wow64_system_service_ex.original = p_wow64_system_service_ex_original;
+    VirtualProtect(&wow64_system_service_ex.original,
+                   sizeof(wow64_system_service_ex.original), dwOldProtect,
+                   &dwOldProtect);
 
-            CRITICAL_SECTION critical_section;
-            InitializeCriticalSection(&critical_section);
+    CRITICAL_SECTION critical_section;
+    InitializeCriticalSection(&critical_section);
 
-            return CALL_FUNCTION_ARM64_DATA{
-                .pp_wow64_transition = pp_wow64_transition,
-                .pp_wow64_system_service_ex = pp_wow64_system_service_ex,
-                .p_wow64_system_service_ex_original =
-                    p_wow64_system_service_ex_original,
-                .critical_section = critical_section,
-            };
-        }()));
+    return CALL_FUNCTION_ARM64_DATA{
+        .pp_wow64_transition = pp_wow64_transition,
+        .pp_wow64_system_service_ex = pp_wow64_system_service_ex,
+        .p_wow64_system_service_ex_original =
+            p_wow64_system_service_ex_original,
+        .critical_section = critical_section,
+    };
+}
 
+inline CALL_FUNCTION_ARM64_DATA* get_call_function_arm64_data() noexcept {
+    WOW64PP_STATIC_INIT_ONCE_TRIVIAL(std::optional<CALL_FUNCTION_ARM64_DATA>,
+                                     function_result,
+                                     make_initial_call_function_arm64_data());
     return &*function_result;
 }
 
@@ -990,7 +990,7 @@ inline std::uint64_t call_function_arm64(std::error_code& ec,
     return wow64_system_service_ex_param.ret;
 }
 
-std::uint16_t get_native_machine(std::error_code& ec) noexcept {
+inline std::uint16_t get_native_machine(std::error_code& ec) noexcept {
     using native_machine_result_t =
         std::expected<std::uint16_t, std::error_code>;
     WOW64PP_STATIC_INIT_ONCE_TRIVIAL(
